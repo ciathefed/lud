@@ -1,0 +1,10 @@
+.vscode/
+.DS_Store
+storage/
+
+debug/
+target/
+
+**/*.rs.bk
+
+*.pdb
