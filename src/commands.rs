@@ -1,4 +1,4 @@
-use std::{fmt::Display, os::unix::fs::MetadataExt};
+use std::{fmt::Display, os::{fd::AsRawFd, unix::fs::MetadataExt}};
 
 use anyhow::{Context, Result, anyhow};
 use camino::Utf8PathBuf;
@@ -167,11 +167,15 @@ where
     operation(Connection::new(stream)).await
 }
 
+pub fn is_tty<T: AsRawFd>(stream: &T) -> bool {
+    unsafe { libc::isatty(stream.as_raw_fd()) == 1 }
+}
+
 fn pretty_print(mut files: Vec<File>) {
     use std::io::{self, Write};
 
     let mut tw = TabWriter::new(io::stdout()).padding(1).minwidth(32);
-    let is_tty = termion::is_tty(&io::stdout());
+    let is_tty = is_tty(&io::stdout());
 
     files.sort_by_key(|file| file.size);
 
