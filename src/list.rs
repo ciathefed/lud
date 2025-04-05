@@ -72,22 +72,46 @@ pub fn select_server_from_list(servers: &[Server]) -> Result<&Server> {
     let result = loop {
         terminal.draw(|f| {
             let size = f.size();
+
+            let vertical_margin = size.height / 64;
+            let horizontal_margin = size.width / 64;
+            let block_area = tui::layout::Rect::new(
+                horizontal_margin,
+                vertical_margin,
+                size.width - 2 * horizontal_margin,
+                size.height - 2 * vertical_margin,
+            );
+
             let block = Block::default()
                 .borders(Borders::ALL)
-                .title("Select Server (↑/↓ to navigate, Enter to select, Esc to quit)");
-            f.render_widget(block, size);
+                .title("Select Server (↑/↓: Navigate, Enter: Select, Esc: Cancel)");
+            f.render_widget(block, block_area);
 
             let items: Vec<ListItem> = stateful_list
                 .items
                 .iter()
-                .map(|server| ListItem::new(server.name.clone()))
+                .map(|server| {
+                    let display_text = format!("{:<20}  {}", server.name, server.addr);
+                    ListItem::new(display_text)
+                })
                 .collect();
 
             let list = List::new(items)
-                .block(Block::default().borders(Borders::ALL))
-                .highlight_symbol(">> ");
+                .block(Block::default().borders(Borders::NONE))
+                .highlight_symbol(">> ")
+                .highlight_style(
+                    tui::style::Style::default()
+                        .bg(tui::style::Color::DarkGray)
+                        .fg(tui::style::Color::White),
+                );
 
-            f.render_stateful_widget(list, size, &mut stateful_list.state);
+            let inner_area = tui::layout::Rect::new(
+                block_area.x + 1,
+                block_area.y + 1,
+                block_area.width.saturating_sub(2),
+                block_area.height.saturating_sub(2),
+            );
+            f.render_stateful_widget(list, inner_area, &mut stateful_list.state);
         })?;
 
         if event::poll(std::time::Duration::from_millis(100))? {

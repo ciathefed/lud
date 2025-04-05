@@ -12,7 +12,7 @@ mod settings;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    env_logger::Builder::new().parse_env("RUP_LOG").init();
 
     let cli = Cli::parse();
 
@@ -38,6 +38,8 @@ async fn main() -> Result<()> {
             std::process::exit(1);
         });
 
+    let addr = server.addr.clone();
+
     log::info!("Using server `{}`", server.name);
 
     match cli.cmd {
@@ -45,32 +47,16 @@ async fn main() -> Result<()> {
             input,
             output,
             force,
-        } => {
-            return run_or_exit(commands::download(
-                input,
-                output,
-                force,
-                server.addr.clone(),
-            ))
-            .await;
-        }
+        } => run_or_exit(commands::download(input, output, force, addr)).await,
         Command::Upload {
             input,
             output,
             force,
-        } => {
-            return run_or_exit(commands::upload(input, output, force, server.addr.clone())).await;
-        }
-        Command::List { path } => {
-            return run_or_exit(commands::list(path, server.addr.clone())).await;
-        }
-        Command::Ping => {
-            return run_or_exit(commands::ping(server.addr.clone())).await;
-        }
-        _ => {}
+        } => run_or_exit(commands::upload(input, output, force, addr)).await,
+        Command::List { path } => run_or_exit(commands::list(path, addr)).await,
+        Command::Ping => run_or_exit(commands::ping(addr)).await,
+        _ => Ok(()),
     }
-
-    Ok(())
 }
 
 async fn run_or_exit<F>(fut: F) -> Result<()>

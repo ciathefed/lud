@@ -48,7 +48,7 @@ pub enum Command {
             long,
             short = 'a',
             help = "Listening address",
-            default_value = "0.0.0.0:4899"
+            default_value = "127.0.0.1:4899"
         )]
         addr: String,
 

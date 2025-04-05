@@ -1,7 +1,6 @@
 .vscode/
 .DS_Store
 storage/
-rup.toml
 
 debug/
 target/
