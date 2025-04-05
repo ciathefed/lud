@@ -152,7 +152,10 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
                             }
                         };
 
-                        let mode = metadata.permissions().mode();
+                        #[cfg(unix)]
+                        let mode = metadata.mode();
+                        #[cfg(not(unix))]
+                        let mode = 0;
 
                         if let Err(e) = conn
                             .write_packet(&Packet::Download(file_path, data, mode))
