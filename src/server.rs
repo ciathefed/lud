@@ -165,10 +165,10 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
                             return;
                         }
 
-                        log::info!("Sent file `{}` to {}", full_path, addr);
+                        log::debug!("Sent file `{}` to {}", full_path, addr);
                         send_ok(&mut conn).await;
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    Err(e) if e.kind() == ErrorKind::NotFound => {
                         send_error(&mut conn, "File not found").await;
                         log::error!("File `{}` not found for download", full_path);
                     }
@@ -181,6 +181,23 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
 
             Packet::Upload(file_path, data, mode, force) => {
                 let full_path = output_path.join(&file_path);
+
+                if !full_path.starts_with(&output_path) {
+                    send_error(&mut conn, "Invalid file path").await;
+                    log::error!(
+                        "Attempted to upload file outside of base path: {}",
+                        file_path
+                    );
+                    return;
+                }
+
+                if let Some(parent) = full_path.parent() {
+                    if let Err(e) = fs::create_dir_all(parent).await {
+                        send_error(&mut conn, "Failed to create directories").await;
+                        log::error!("Failed to create directories `{}`: {:#}", parent, e);
+                        return;
+                    }
+                }
 
                 if !force {
                     match fs::try_exists(&full_path).await {
@@ -228,7 +245,7 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
                     }
                 }
 
-                log::info!("Saved file `{}`", full_path);
+                log::debug!("Saved file `{}`", full_path);
                 send_ok(&mut conn).await;
             }
 

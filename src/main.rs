@@ -1,8 +1,10 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::Parser as _;
 use cli::{Cli, Command};
 use list::select_server_from_list;
+use log::LevelFilter;
 use settings::Settings;
+use simplelog::{ColorChoice, ConfigBuilder, TermLogger, TerminalMode};
 
 mod cli;
 mod commands;
@@ -10,9 +12,32 @@ mod list;
 mod server;
 mod settings;
 
+fn init_logger() {
+    let log_level = std::env::var("RUP_LOG").unwrap_or_else(|_| String::from("INFO"));
+
+    let level_filter = match log_level.to_uppercase().as_str() {
+        "OFF" => LevelFilter::Off,
+        "ERROR" => LevelFilter::Error,
+        "WARN" => LevelFilter::Warn,
+        "INFO" => LevelFilter::Info,
+        "DEBUG" => LevelFilter::Debug,
+        "TRACE" => LevelFilter::Trace,
+        _ => LevelFilter::Info,
+    };
+
+    let config = ConfigBuilder::new()
+        .set_time_format_str("%Y-%m-%d %H:%M:%S")
+        .set_time_to_local(true)
+        .set_target_level(LevelFilter::Off)
+        .set_thread_level(LevelFilter::Off)
+        .build();
+
+    TermLogger::init(level_filter, config, TerminalMode::Mixed, ColorChoice::Auto).unwrap();
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    env_logger::Builder::new().parse_env("RUP_LOG").init();
+    init_logger();
 
     let cli = Cli::parse();
 
@@ -40,7 +65,7 @@ async fn main() -> Result<()> {
 
     let addr = server.addr.clone();
 
-    log::info!("Using server `{}`", server.name);
+    log::debug!("Using server `{}`", server.name);
 
     match cli.cmd {
         Command::Download {
