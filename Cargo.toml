@@ -1,7 +1,12 @@
 [package]
 name = "fup"
 version = "0.1.0"
+authors = ["ciathefed"]
 description = "A CLI tool for easy file transfers"
+license = "MIT"
+repository = "https://github.com/ciathefed/fup"
+readme = "README.md"
+keywords = ["cli", "file", "transfer", "server", "networking"]
 edition = "2024"
 
 [dependencies]
