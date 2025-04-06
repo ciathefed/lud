@@ -1,10 +1,10 @@
 [package]
-name = "fup"
+name = "lud"
 version = "0.1.0"
 authors = ["ciathefed"]
 description = "A CLI tool for easy file transfers"
 license = "MIT"
-repository = "https://github.com/ciathefed/fup"
+repository = "https://github.com/ciathefed/lud"
 readme = "README.md"
 keywords = ["cli", "file", "transfer", "server", "networking"]
 edition = "2024"
