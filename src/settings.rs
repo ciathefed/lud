@@ -49,7 +49,7 @@ pub fn try_load_config_file() -> Result<Config> {
     let mut builder = Config::builder();
 
     for path in paths {
-        let file = path.join("rup.toml");
+        let file = path.join("fup.toml");
         if file.exists() {
             builder = builder.add_source(File::from(file));
             break;

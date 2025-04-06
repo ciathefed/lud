@@ -1,5 +1,5 @@
 [package]
-name = "rup"
+name = "fup"
 version = "0.1.0"
 description = "A CLI tool for easy file transfers"
 edition = "2024"

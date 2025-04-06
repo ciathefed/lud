@@ -13,7 +13,7 @@ mod server;
 mod settings;
 
 fn init_logger() {
-    let log_level = std::env::var("RUP_LOG").unwrap_or_else(|_| String::from("INFO"));
+    let log_level = std::env::var("FUP_LOG").unwrap_or_else(|_| String::from("INFO"));
 
     let level_filter = match log_level.to_uppercase().as_str() {
         "OFF" => LevelFilter::Off,
