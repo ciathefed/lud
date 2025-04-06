@@ -134,7 +134,14 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
     let mut conn = Connection::new(stream);
 
     async {
-        let packet = conn.read_packet().await.unwrap();
+        let packet = match conn.read_packet().await {
+            Ok(p) => p,
+            Err(e) => {
+                send_error(&mut conn, "Failed to read packet").await;
+                log::error!("Failed to read packet: {:#}", e);
+                return;
+            }
+        };
         let packet_name = format!("{}", packet);
 
         match packet {
