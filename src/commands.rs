@@ -1,4 +1,4 @@
-use std::{fmt::Display, os::unix::fs::MetadataExt};
+use std::os::unix::fs::MetadataExt;
 
 use anyhow::{Context, Result, anyhow};
 use camino::Utf8PathBuf;
@@ -14,7 +14,7 @@ use tokio::{
 
 use crate::server::{Connection, File, Packet};
 
-pub async fn download<A: ToSocketAddrs + Display>(
+pub async fn download<A: ToSocketAddrs>(
     remote_path: Utf8PathBuf,
     local_path: Option<Utf8PathBuf>,
     force: bool,
@@ -71,7 +71,7 @@ pub async fn download<A: ToSocketAddrs + Display>(
     .await
 }
 
-pub async fn upload<A: ToSocketAddrs + Display>(
+pub async fn upload<A: ToSocketAddrs>(
     local_path: Utf8PathBuf,
     remote_path: Option<Utf8PathBuf>,
     force: bool,
@@ -113,7 +113,7 @@ pub async fn upload<A: ToSocketAddrs + Display>(
     .await
 }
 
-pub async fn list<A: ToSocketAddrs + Display>(path: Option<Utf8PathBuf>, addr: A) -> Result<()> {
+pub async fn list<A: ToSocketAddrs>(path: Option<Utf8PathBuf>, addr: A) -> Result<()> {
     let path = path.unwrap_or_else(|| "./".into());
 
     with_connection(addr, |mut conn| async move {
@@ -133,7 +133,7 @@ pub async fn list<A: ToSocketAddrs + Display>(path: Option<Utf8PathBuf>, addr: A
     .await
 }
 
-pub async fn ping<A: ToSocketAddrs + Display>(addr: A) -> Result<()> {
+pub async fn ping<A: ToSocketAddrs>(addr: A) -> Result<()> {
     let start_time = Instant::now();
 
     with_connection(addr, |mut conn| async move {
@@ -156,7 +156,7 @@ pub async fn ping<A: ToSocketAddrs + Display>(addr: A) -> Result<()> {
 
 async fn with_connection<A, F, Fut>(addr: A, operation: F) -> Result<()>
 where
-    A: ToSocketAddrs + Display,
+    A: ToSocketAddrs,
     F: FnOnce(Connection) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
