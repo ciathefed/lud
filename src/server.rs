@@ -24,6 +24,7 @@ pub enum Packet {
     Download(String, Vec<u8>, u32),
     Upload(String, Vec<u8>, u32, bool),
     List(String, Vec<File>),
+    Remove(String, bool, bool),
     Ping,
 }
 
@@ -295,6 +296,88 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
                 send_ok(&mut conn).await;
             }
 
+            Packet::Remove(path, force, recursive) => {
+                let full_path = match safe_join(&output_path, &path) {
+                    Some(p) => p,
+                    None => {
+                        send_error(&mut conn, "Invalid path").await;
+                        log::error!("Invalid path provided: {}", path);
+                        return;
+                    }
+                };
+
+                match fs::try_exists(&full_path).await {
+                    Ok(false) => {
+                        if force {
+                            send_ok(&mut conn).await;
+                            return;
+                        } else {
+                            send_error(&mut conn, "Path does not exist").await;
+                            log::error!("Path `{}` does not exist", full_path);
+                            return;
+                        }
+                    }
+                    Err(e) => {
+                        send_error(&mut conn, "Failed to check path existence").await;
+                        log::error!("Failed to check path `{}`: {:#}", full_path, e);
+                        return;
+                    }
+                    _ => {}
+                }
+
+                let metadata = match fs::metadata(&full_path).await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        send_error(&mut conn, "Failed to get path metadata").await;
+                        log::error!("Failed to get metadata for `{}`: {:#}", full_path, e);
+                        return;
+                    }
+                };
+
+                if metadata.is_file() {
+                    if let Err(e) = fs::remove_file(&full_path).await {
+                        send_error(&mut conn, "Failed to delete file").await;
+                        log::error!("Failed to delete file `{}`: {:#}", full_path, e);
+                        return;
+                    }
+                } else if metadata.is_dir() {
+                    if recursive {
+                        if let Err(e) = fs::remove_dir_all(&full_path).await {
+                            send_error(&mut conn, "Failed to delete directory recursively").await;
+                            log::error!(
+                                "Failed to delete directory `{}` recursively: {:#}",
+                                full_path,
+                                e
+                            );
+                            return;
+                        }
+                    } else {
+                        match fs::remove_dir(&full_path).await {
+                            Ok(()) => {}
+                            Err(e) if e.kind() == ErrorKind::DirectoryNotEmpty => {
+                                send_error(&mut conn, "Directory not empty (use recursive flag)")
+                                    .await;
+                                log::error!("Directory `{}` not empty", full_path);
+                                return;
+                            }
+                            Err(e) => {
+                                send_error(&mut conn, "Failed to delete directory").await;
+                                log::error!("Failed to delete directory `{}`: {:#}", full_path, e);
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                log::debug!(
+                    "Deleted path `{}` (force: {}, recursive: {})",
+                    full_path,
+                    force,
+                    recursive
+                );
+                send_ok(&mut conn).await;
+            }
+
             Packet::Ping => {
                 send_ok(&mut conn).await;
             }
@@ -316,43 +399,38 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
 }
 
 fn safe_join(base: &Utf8Path, relative: &str) -> Option<Utf8PathBuf> {
-    if relative == "./" {
+    if relative.is_empty() || relative == "." || relative == "./" {
         return Some(base.to_owned());
     }
-    
-    let joined = base.join(relative);
-    let normalized = normalize_path(&joined)?;
 
-    if normalized.starts_with(base) {
-        Some(normalized)
-    } else {
-        None
-    }
-}
-
-fn normalize_path(path: &Utf8Path) -> Option<Utf8PathBuf> {
+    let relative_path = Utf8Path::new(relative);
     let mut normalized = Utf8PathBuf::new();
 
-    for component in path.components() {
+    for component in relative_path.components() {
         match component {
-            camino::Utf8Component::Prefix(prefix) => {
-                let s = prefix.as_os_str().to_str()?;
-                normalized.push(s);
-            }
-            camino::Utf8Component::RootDir => {
-                normalized.push("/");
+            camino::Utf8Component::Prefix(_) | camino::Utf8Component::RootDir => {
+                return None;
             }
             camino::Utf8Component::CurDir => {}
             camino::Utf8Component::ParentDir => {
                 if !normalized.pop() {
-                    normalized.push("..");
+                    return None;
                 }
             }
-            camino::Utf8Component::Normal(normal) => {
-                normalized.push(normal);
+            camino::Utf8Component::Normal(part) => {
+                if part.is_empty() {
+                    return None;
+                }
+                normalized.push(part);
             }
         }
     }
 
-    Some(normalized)
+    let joined = base.join(&normalized);
+
+    if joined.starts_with(base) {
+        Some(joined)
+    } else {
+        None
+    }
 }

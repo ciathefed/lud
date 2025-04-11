@@ -23,7 +23,7 @@ pub enum Command {
         #[clap(long, short = 'f', help = "Overwriting existing local file")]
         force: bool,
     },
-    
+
     #[clap(visible_alias = "u", about = "Upload a file")]
     Upload {
         #[clap(required = true, help = "Local path to file")]
@@ -52,8 +52,33 @@ pub enum Command {
         )]
         addr: String,
 
-        #[clap(long, short = 'o', help = "Output path for uploaded files", default_value = "./storage")]
+        #[clap(
+            long,
+            short = 'o',
+            help = "Output path for uploaded files",
+            default_value = "./storage"
+        )]
         output: Utf8PathBuf,
+    },
+
+    #[clap(visible_alias = "rm", about = "Delete a file or directory")]
+    Remove {
+        #[clap(required = true, help = "Remote path to delete")]
+        path: Utf8PathBuf,
+
+        #[clap(
+            long,
+            short = 'f',
+            help = "Force deletion (ignore nonexistent files, never prompt)"
+        )]
+        force: bool,
+
+        #[clap(
+            long,
+            short = 'r',
+            help = "Remove directories and their contents recursively"
+        )]
+        recursive: bool,
     },
 
     #[clap(visible_alias = "p", about = "Ping a server")]

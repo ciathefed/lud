@@ -133,6 +133,29 @@ pub async fn list<A: ToSocketAddrs>(path: Option<Utf8PathBuf>, addr: A) -> Resul
     .await
 }
 
+pub async fn remove<A: ToSocketAddrs>(
+    path: Utf8PathBuf,
+    force: bool,
+    recursive: bool,
+    addr: A,
+) -> Result<()> {
+    with_connection(addr, |mut conn| async move {
+        conn.write_packet(&Packet::Remove(path.clone().into(), force, recursive))
+            .await
+            .context("Failed to send remove request")?;
+
+        match conn.read_packet().await? {
+            Packet::Ok => {
+                log::info!("Successfully removed path: {}", path);
+                Ok(())
+            }
+            Packet::Error(e) => Err(anyhow!(e)),
+            other => Err(anyhow!("Unexpected response: {:?}", other)),
+        }
+    })
+    .await
+}
+
 pub async fn ping<A: ToSocketAddrs>(addr: A) -> Result<()> {
     let start_time = Instant::now();
 

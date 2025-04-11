@@ -79,6 +79,11 @@ async fn main() -> Result<()> {
             force,
         } => run_or_exit(commands::upload(input, output, force, addr)).await,
         Command::List { path } => run_or_exit(commands::list(path, addr)).await,
+        Command::Remove {
+            path,
+            force,
+            recursive,
+        } => run_or_exit(commands::remove(path, force, recursive, addr)).await,
         Command::Ping => run_or_exit(commands::ping(addr)).await,
         _ => Ok(()),
     }
