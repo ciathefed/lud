@@ -29,3 +29,4 @@ config = "0.15.11"
 dirs = "6.0.0"
 tui = { version = "0.16", features = ["crossterm"] }
 crossterm = "0.25"
+indicatif = "0.17"

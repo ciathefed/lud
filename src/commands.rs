@@ -3,7 +3,8 @@ use std::os::unix::fs::MetadataExt;
 use anyhow::{Context, Result, anyhow};
 use camino::Utf8PathBuf;
 use chrono::Utc;
-use humansize::{DECIMAL, format_size};
+use humansize::{BINARY, format_size};
+use indicatif::{ProgressBar, ProgressStyle};
 use tabwriter::TabWriter;
 use tokio::{
     fs,
@@ -55,6 +56,11 @@ pub async fn download<A: ToSocketAddrs>(
                 .context(format!("Failed to set permissions for `{}`", local_path))?;
         }
 
+        let pb = ProgressBar::new(total_size);
+        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+            .unwrap()
+            .progress_chars("#>-"));
+
         let mut received_bytes = 0;
 
         loop {
@@ -64,12 +70,15 @@ pub async fn download<A: ToSocketAddrs>(
                     file.write_all(&data)
                         .await
                         .context(format!("Failed to write to file `{}`", local_path))?;
+                    pb.set_position(received_bytes);
                 }
                 Packet::DownloadEnd => break,
                 Packet::Error(e) => return Err(anyhow!(e)),
                 other => return Err(anyhow!("Unexpected packet: {:?}", other)),
             }
         }
+
+        pb.finish_and_clear();
 
         if received_bytes != total_size {
             return Err(anyhow!(
@@ -82,7 +91,7 @@ pub async fn download<A: ToSocketAddrs>(
         log::info!(
             "Successfully downloaded file `{}` ({})",
             local_path,
-            format_size(total_size, DECIMAL)
+            format_size(total_size, BINARY)
         );
         Ok(())
     })
@@ -122,12 +131,18 @@ pub async fn upload<A: ToSocketAddrs>(
             other => return Err(anyhow!("Unexpected response: {:?}", other)),
         }
 
-        const CHUNK_SIZE: usize = 64 * 1024;
+        let chunk_size = optimal_chunk_size(metadata.len());
         let mut file = fs::File::open(&local_path)
             .await
             .context(format!("Failed to open file `{}`", &local_path))?;
 
-        let mut buffer = vec![0u8; CHUNK_SIZE];
+        let pb = ProgressBar::new(metadata.len());
+        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+            .unwrap()
+            .progress_chars("#>-"));
+
+        let mut buffer = vec![0u8; chunk_size];
+        let mut sent_bytes = 0;
 
         loop {
             let bytes_read = file
@@ -142,7 +157,12 @@ pub async fn upload<A: ToSocketAddrs>(
             conn.write_packet(&Packet::UploadChunk(buffer[..bytes_read].to_vec()))
                 .await
                 .context("Failed to send file chunk")?;
+            
+            sent_bytes += bytes_read as u64;
+            pb.set_position(sent_bytes);
         }
+
+        pb.finish_and_clear();
 
         conn.write_packet(&Packet::UploadEnd)
             .await
@@ -153,7 +173,7 @@ pub async fn upload<A: ToSocketAddrs>(
                 log::info!(
                     "Successfully uploaded file `{}` ({})",
                     local_path,
-                    format_size(metadata.len(), DECIMAL)
+                    format_size(metadata.len(), BINARY)
                 );
                 Ok(())
             }
@@ -241,6 +261,13 @@ where
     operation(Connection::new(stream)).await
 }
 
+fn optimal_chunk_size(file_size: u64) -> usize {
+    let min = 16 * 1024;
+    let max = 1024 * 1024;
+    let scaled = ((file_size as f64).log2() * 1024.0).clamp(min as f64, max as f64);
+    scaled as usize
+}
+
 fn pretty_print(mut files: Vec<File>) {
     use std::io::{self, Write};
 
@@ -263,7 +290,7 @@ fn pretty_print(mut files: Vec<File>) {
         }
         line.push_str(&file.path);
         line.push('\t');
-        line.push_str(&format_size(file.size, DECIMAL));
+        line.push_str(&format_size(file.size, BINARY));
         if is_tty {
             line.push_str("\x1b[0m");
         }
