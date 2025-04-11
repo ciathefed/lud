@@ -1,6 +1,6 @@
 [package]
 name = "lud"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["ciathefed"]
 description = "A CLI tool for easy file transfers"
 license = "MIT"
