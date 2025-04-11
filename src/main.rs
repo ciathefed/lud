@@ -11,6 +11,7 @@ mod commands;
 mod list;
 mod server;
 mod settings;
+mod utils;
 
 fn init_logger() {
     let log_level = std::env::var("LUD_LOG").unwrap_or_else(|_| String::from("INFO"));

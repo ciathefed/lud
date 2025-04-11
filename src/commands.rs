@@ -5,7 +5,6 @@ use camino::Utf8PathBuf;
 use chrono::Utc;
 use humansize::{BINARY, format_size};
 use indicatif::{ProgressBar, ProgressStyle};
-use tabwriter::TabWriter;
 use tokio::{
     fs,
     io::{AsyncReadExt, AsyncWriteExt},
@@ -13,7 +12,12 @@ use tokio::{
     time::Instant,
 };
 
-use crate::server::{Connection, File, Packet};
+use crate::{server::{Connection, Packet}, utils};
+
+const TIME_FORMAT: &str = "%Y-%m-%dT%H-%M-%S";
+
+const PROGRESS_STYLE: &str = "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})";
+const PROGRESS_CHARS: &str = "#>-";
 
 pub async fn download<A: ToSocketAddrs>(
     remote_path: Utf8PathBuf,
@@ -23,7 +27,7 @@ pub async fn download<A: ToSocketAddrs>(
 ) -> Result<()> {
     let local_path = local_path.unwrap_or_else(|| {
         remote_path.file_name().map(Into::into).unwrap_or_else(|| {
-            let timestamp = Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+            let timestamp = Utc::now().format(TIME_FORMAT).to_string();
             format!("{timestamp}-output").into()
         })
     });
@@ -57,9 +61,9 @@ pub async fn download<A: ToSocketAddrs>(
         }
 
         let pb = ProgressBar::new(total_size);
-        pb.set_style(ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {bytes}/{total_bytes} ({bytes_per_sec}, {eta})")
+        pb.set_style(ProgressStyle::with_template(PROGRESS_STYLE)
             .unwrap()
-            .progress_chars("#>-"));
+            .progress_chars(PROGRESS_CHARS));
 
         let mut received_bytes = 0;
 
@@ -106,7 +110,7 @@ pub async fn upload<A: ToSocketAddrs>(
 ) -> Result<()> {
     let remote_path = remote_path.unwrap_or_else(|| {
         local_path.file_name().map(Into::into).unwrap_or_else(|| {
-            let timestamp = Utc::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+            let timestamp = Utc::now().format(TIME_FORMAT).to_string();
             format!("{timestamp}-output").into()
         })
     });
@@ -131,7 +135,7 @@ pub async fn upload<A: ToSocketAddrs>(
             other => return Err(anyhow!("Unexpected response: {:?}", other)),
         }
 
-        let chunk_size = optimal_chunk_size(metadata.len());
+        let chunk_size = utils::optimal_chunk_size(metadata.len());
         let mut file = fs::File::open(&local_path)
             .await
             .context(format!("Failed to open file `{}`", &local_path))?;
@@ -194,7 +198,7 @@ pub async fn list<A: ToSocketAddrs>(path: Option<Utf8PathBuf>, addr: A) -> Resul
 
         match conn.read_packet().await? {
             Packet::List(_, files) => {
-                pretty_print(files);
+                utils::pretty_print(files);
                 Ok(())
             }
             Packet::Error(e) => Err(anyhow!(e)),
@@ -259,44 +263,4 @@ where
         .context("Failed to connect to server")?;
 
     operation(Connection::new(stream)).await
-}
-
-fn optimal_chunk_size(file_size: u64) -> usize {
-    let min = 16 * 1024;
-    let max = 1024 * 1024;
-    let scaled = ((file_size as f64).log2() * 1024.0).clamp(min as f64, max as f64);
-    scaled as usize
-}
-
-fn pretty_print(mut files: Vec<File>) {
-    use std::io::{self, Write};
-
-    let mut tw = TabWriter::new(io::stdout()).padding(1).minwidth(32);
-    let is_tty = atty::is(atty::Stream::Stdout);
-
-    files.sort_by_key(|file| file.size);
-
-    if is_tty {
-        writeln!(tw, "\x1b[1mFile Path\tSize\x1b[0m").unwrap();
-    } else {
-        writeln!(tw, "File Path\tSize").unwrap();
-    }
-
-    let mut line = String::with_capacity(128);
-    for file in files {
-        line.clear();
-        if is_tty {
-            line.push_str("\x1b[0m");
-        }
-        line.push_str(&file.path);
-        line.push('\t');
-        line.push_str(&format_size(file.size, BINARY));
-        if is_tty {
-            line.push_str("\x1b[0m");
-        }
-        line.push('\n');
-        tw.write_all(line.as_bytes()).unwrap();
-    }
-
-    tw.flush().unwrap();
 }

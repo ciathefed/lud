@@ -17,6 +17,8 @@ use tokio::{
 };
 use walkdir::WalkDir;
 
+use crate::utils;
+
 #[derive(Debug, Display, Serialize, Deserialize)]
 pub enum Packet {
     Ok,
@@ -118,23 +120,6 @@ pub async fn start<A: ToSocketAddrs + Display>(addr: A, output_path: Utf8PathBuf
     }
 }
 
-async fn send_error(conn: &mut Connection, msg: &str) {
-    if let Err(e) = conn.write_packet(&Packet::Error(msg.into())).await {
-        log::error!("Failed to send packet: {:#}", e);
-    }
-}
-
-async fn send_ok(conn: &mut Connection) {
-    if let Err(e) = conn.write_packet(&Packet::Ok).await {
-        log::error!("Failed to send packet: {:#}", e);
-    }
-}
-
-async fn shutdown_connection(conn: &mut Connection, addr: &SocketAddr) {
-    conn.shutdown().await;
-    log::info!("Closed connection from {}", addr);
-}
-
 async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf8PathBuf) {
     let mut conn = Connection::new(stream);
 
@@ -219,7 +204,7 @@ async fn handle_download(
     file_path: &str,
     addr: &SocketAddr,
 ) -> Result<()> {
-    let full_path = match safe_join(output_path, file_path) {
+    let full_path = match utils::safe_join(output_path, file_path) {
         Some(p) => p,
         None => {
             send_error(conn, "Invalid file path").await;
@@ -245,11 +230,11 @@ async fn handle_download(
     .await
     .context("Failed to send download start packet")?;
 
-    const CHUNK_SIZE: usize = 64 * 1024;
+    let chunk_size = utils::optimal_chunk_size(file_size);
     let mut file = fs::File::open(&full_path)
         .await
         .context("Failed to open file")?;
-    let mut buffer = vec![0u8; CHUNK_SIZE];
+    let mut buffer = vec![0u8; chunk_size];
 
     loop {
         let bytes_read = file
@@ -283,7 +268,7 @@ async fn handle_upload(
     force: bool,
     addr: &SocketAddr,
 ) -> Result<()> {
-    let full_path = match safe_join(output_path, &file_path) {
+    let full_path = match utils::safe_join(output_path, &file_path) {
         Some(p) => p,
         None => {
             send_error(conn, "Invalid file path").await;
@@ -358,7 +343,7 @@ async fn handle_remove(
     force: bool,
     recursive: bool,
 ) -> Result<()> {
-    let full_path = match safe_join(&output_path, &path) {
+    let full_path = match utils::safe_join(&output_path, &path) {
         Some(p) => p,
         None => {
             send_error(conn, "Invalid path").await;
@@ -434,7 +419,7 @@ async fn handle_remove(
 }
 
 async fn handle_list(conn: &mut Connection, output_path: &Utf8Path, path: String) -> Result<()> {
-    let full_path = match safe_join(&output_path, &path) {
+    let full_path = match utils::safe_join(&output_path, &path) {
         Some(p) => p,
         None => {
             send_error(conn, "Invalid path").await;
@@ -468,39 +453,19 @@ async fn handle_list(conn: &mut Connection, output_path: &Utf8Path, path: String
     Ok(())
 }
 
-fn safe_join(base: &Utf8Path, relative: &str) -> Option<Utf8PathBuf> {
-    if relative.is_empty() || relative == "." || relative == "./" {
-        return Some(base.to_owned());
+async fn shutdown_connection(conn: &mut Connection, addr: &SocketAddr) {
+    conn.shutdown().await;
+    log::info!("Closed connection from {}", addr);
+}
+
+async fn send_ok(conn: &mut Connection) {
+    if let Err(e) = conn.write_packet(&Packet::Ok).await {
+        log::error!("Failed to send packet: {:#}", e);
     }
+}
 
-    let relative_path = Utf8Path::new(relative);
-    let mut normalized = Utf8PathBuf::new();
-
-    for component in relative_path.components() {
-        match component {
-            camino::Utf8Component::Prefix(_) | camino::Utf8Component::RootDir => {
-                return None;
-            }
-            camino::Utf8Component::CurDir => {}
-            camino::Utf8Component::ParentDir => {
-                if !normalized.pop() {
-                    return None;
-                }
-            }
-            camino::Utf8Component::Normal(part) => {
-                if part.is_empty() {
-                    return None;
-                }
-                normalized.push(part);
-            }
-        }
-    }
-
-    let joined = base.join(&normalized);
-
-    if joined.starts_with(base) {
-        Some(joined)
-    } else {
-        None
+async fn send_error(conn: &mut Connection, msg: &str) {
+    if let Err(e) = conn.write_packet(&Packet::Error(msg.into())).await {
+        log::error!("Failed to send packet: {:#}", e);
     }
 }
