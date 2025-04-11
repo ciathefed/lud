@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Error, Result};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use strum_macros::Display;
 use tokio::{
@@ -146,7 +146,14 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
 
         match packet {
             Packet::Download(file_path, _, _) => {
-                let full_path = output_path.join(&file_path);
+                let full_path = match safe_join(&output_path, &file_path) {
+                    Some(p) => p,
+                    None => {
+                        send_error(&mut conn, "Invalid file path").await;
+                        log::error!("Invalid file path provided: {}", file_path);
+                        return;
+                    }
+                };
 
                 match fs::read(&full_path).await {
                     Ok(data) => {
@@ -187,16 +194,14 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
             }
 
             Packet::Upload(file_path, data, mode, force) => {
-                let full_path = output_path.join(&file_path);
-
-                if !full_path.starts_with(&output_path) {
-                    send_error(&mut conn, "Invalid file path").await;
-                    log::error!(
-                        "Attempted to upload file outside of base path: {}",
-                        file_path
-                    );
-                    return;
-                }
+                let full_path = match safe_join(&output_path, &file_path) {
+                    Some(p) => p,
+                    None => {
+                        send_error(&mut conn, "Invalid file path").await;
+                        log::error!("Invalid file path provided: {}", file_path);
+                        return;
+                    }
+                };
 
                 if let Some(parent) = full_path.parent() {
                     if let Err(e) = fs::create_dir_all(parent).await {
@@ -257,7 +262,14 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
             }
 
             Packet::List(path, _) => {
-                let full_path = output_path.join(&path);
+                let full_path = match safe_join(&output_path, &path) {
+                    Some(p) => p,
+                    None => {
+                        send_error(&mut conn, "Invalid path").await;
+                        log::error!("Invalid path provided: {}", path);
+                        return;
+                    }
+                };
 
                 let mut files = Vec::new();
 
@@ -301,4 +313,46 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
     .await;
 
     shutdown_connection(&mut conn, &addr).await;
+}
+
+fn safe_join(base: &Utf8Path, relative: &str) -> Option<Utf8PathBuf> {
+    if relative == "./" {
+        return Some(base.to_owned());
+    }
+    
+    let joined = base.join(relative);
+    let normalized = normalize_path(&joined)?;
+
+    if normalized.starts_with(base) {
+        Some(normalized)
+    } else {
+        None
+    }
+}
+
+fn normalize_path(path: &Utf8Path) -> Option<Utf8PathBuf> {
+    let mut normalized = Utf8PathBuf::new();
+
+    for component in path.components() {
+        match component {
+            camino::Utf8Component::Prefix(prefix) => {
+                let s = prefix.as_os_str().to_str()?;
+                normalized.push(s);
+            }
+            camino::Utf8Component::RootDir => {
+                normalized.push("/");
+            }
+            camino::Utf8Component::CurDir => {}
+            camino::Utf8Component::ParentDir => {
+                if !normalized.pop() {
+                    normalized.push("..");
+                }
+            }
+            camino::Utf8Component::Normal(normal) => {
+                normalized.push(normal);
+            }
+        }
+    }
+
+    Some(normalized)
 }
