@@ -7,7 +7,7 @@ use humansize::{DECIMAL, format_size};
 use tabwriter::TabWriter;
 use tokio::{
     fs,
-    io::AsyncWriteExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpStream, ToSocketAddrs},
     time::Instant,
 };
@@ -27,46 +27,64 @@ pub async fn download<A: ToSocketAddrs>(
         })
     });
 
-    if !force {
-        if fs::try_exists(&local_path).await.unwrap_or(false) {
-            return Err(anyhow!("File already exists",));
-        }
+    if !force && fs::try_exists(&local_path).await.unwrap_or(false) {
+        return Err(anyhow!("File already exists"));
     }
 
     with_connection(addr, |mut conn| async move {
-        conn.write_packet(&Packet::Download(remote_path.into(), Vec::new(), 0))
+        conn.write_packet(&Packet::DownloadStart(remote_path.into(), 0, 0))
             .await
             .context("Failed to send download request")?;
 
-        match conn.read_packet().await? {
-            Packet::Download(_, data, mode) => {
-                let mut file = fs::File::create(&local_path)
-                    .await
-                    .context(format!("Failed to create file `{}`", local_path))?;
+        let (_, total_size, mode) = match conn.read_packet().await? {
+            Packet::DownloadStart(name, size, mode) => (name, size, mode),
+            Packet::Error(e) => return Err(anyhow!(e)),
+            other => return Err(anyhow!("Unexpected response: {:?}", other)),
+        };
 
-                file.write_all(&data)
-                    .await
-                    .context(format!("Failed to write to file `{}`", local_path))?;
+        let mut file = fs::File::create(&local_path)
+            .await
+            .context(format!("Failed to create file `{}`", local_path))?;
 
-                #[cfg(unix)]
-                {
-                    use std::fs::Permissions;
-                    use std::os::unix::fs::PermissionsExt;
-                    file.set_permissions(Permissions::from_mode(mode))
-                        .await
-                        .context(format!("Failed to set permissions for `{}`", local_path))?;
-                }
-
-                log::info!(
-                    "Successfully downloaded file `{}` ({})",
-                    local_path,
-                    format_size(data.len(), DECIMAL)
-                );
-                Ok(())
-            }
-            Packet::Error(e) => Err(anyhow!(e)),
-            other => Err(anyhow!("Unexpected response: {:?}", other)),
+        #[cfg(unix)]
+        {
+            use std::fs::Permissions;
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(Permissions::from_mode(mode))
+                .await
+                .context(format!("Failed to set permissions for `{}`", local_path))?;
         }
+
+        let mut received_bytes = 0;
+
+        loop {
+            match conn.read_packet().await? {
+                Packet::DownloadChunk(data) => {
+                    received_bytes += data.len() as u64;
+                    file.write_all(&data)
+                        .await
+                        .context(format!("Failed to write to file `{}`", local_path))?;
+                }
+                Packet::DownloadEnd => break,
+                Packet::Error(e) => return Err(anyhow!(e)),
+                other => return Err(anyhow!("Unexpected packet: {:?}", other)),
+            }
+        }
+
+        if received_bytes != total_size {
+            return Err(anyhow!(
+                "File size mismatch (received {} of {} bytes)",
+                received_bytes,
+                total_size
+            ));
+        }
+
+        log::info!(
+            "Successfully downloaded file `{}` ({})",
+            local_path,
+            format_size(total_size, DECIMAL)
+        );
+        Ok(())
     })
     .await
 }
@@ -84,25 +102,58 @@ pub async fn upload<A: ToSocketAddrs>(
         })
     });
 
-    let (data, metadata) = tokio::try_join!(fs::read(&local_path), fs::metadata(&local_path),)
-        .context(format!("Failed to open file `{}`", &local_path))?;
+    let metadata = fs::metadata(&local_path)
+        .await
+        .context(format!("Failed to get metadata for `{}`", &local_path))?;
 
     with_connection(addr, |mut conn| async move {
-        conn.write_packet(&Packet::Upload(
+        conn.write_packet(&Packet::UploadStart(
             remote_path.into(),
-            data,
+            metadata.len(),
             metadata.mode(),
             force,
         ))
         .await
-        .context("Failed to send packet")?;
+        .context("Failed to send upload start packet")?;
+
+        match conn.read_packet().await? {
+            Packet::Ok => {}
+            Packet::Error(e) => return Err(anyhow!(e)),
+            other => return Err(anyhow!("Unexpected response: {:?}", other)),
+        }
+
+        const CHUNK_SIZE: usize = 64 * 1024;
+        let mut file = fs::File::open(&local_path)
+            .await
+            .context(format!("Failed to open file `{}`", &local_path))?;
+
+        let mut buffer = vec![0u8; CHUNK_SIZE];
+
+        loop {
+            let bytes_read = file
+                .read(&mut buffer)
+                .await
+                .context(format!("Failed to read file `{}`", &local_path))?;
+
+            if bytes_read == 0 {
+                break;
+            }
+
+            conn.write_packet(&Packet::UploadChunk(buffer[..bytes_read].to_vec()))
+                .await
+                .context("Failed to send file chunk")?;
+        }
+
+        conn.write_packet(&Packet::UploadEnd)
+            .await
+            .context("Failed to send upload end packet")?;
 
         match conn.read_packet().await? {
             Packet::Ok => {
                 log::info!(
                     "Successfully uploaded file `{}` ({})",
                     local_path,
-                    format_size(metadata.size(), DECIMAL)
+                    format_size(metadata.len(), DECIMAL)
                 );
                 Ok(())
             }

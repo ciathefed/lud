@@ -21,8 +21,12 @@ use walkdir::WalkDir;
 pub enum Packet {
     Ok,
     Error(String),
-    Download(String, Vec<u8>, u32),
-    Upload(String, Vec<u8>, u32, bool),
+    DownloadStart(String, u64, u32),
+    DownloadChunk(Vec<u8>),
+    DownloadEnd,
+    UploadStart(String, u64, u32, bool),
+    UploadChunk(Vec<u8>),
+    UploadEnd,
     List(String, Vec<File>),
     Remove(String, bool, bool),
     Ping,
@@ -146,236 +150,47 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
         let packet_name = format!("{}", packet);
 
         match packet {
-            Packet::Download(file_path, _, _) => {
-                let full_path = match safe_join(&output_path, &file_path) {
-                    Some(p) => p,
-                    None => {
-                        send_error(&mut conn, "Invalid file path").await;
-                        log::error!("Invalid file path provided: {}", file_path);
-                        return;
-                    }
-                };
-
-                match fs::read(&full_path).await {
-                    Ok(data) => {
-                        let metadata = match fs::metadata(&full_path).await {
-                            Ok(m) => m,
-                            Err(e) => {
-                                send_error(&mut conn, "Failed to get file metadata").await;
-                                log::error!("Failed to get metadata for `{}`: {:#}", full_path, e);
-                                return;
-                            }
-                        };
-
-                        #[cfg(unix)]
-                        let mode = metadata.mode();
-                        #[cfg(not(unix))]
-                        let mode = 0;
-
-                        if let Err(e) = conn
-                            .write_packet(&Packet::Download(file_path, data, mode))
-                            .await
-                        {
-                            log::error!("Failed to send file `{}`: {:#}", full_path, e);
-                            return;
-                        }
-
-                        log::debug!("Sent file `{}` to {}", full_path, addr);
-                        send_ok(&mut conn).await;
-                    }
-                    Err(e) if e.kind() == ErrorKind::NotFound => {
-                        send_error(&mut conn, "File not found").await;
-                        log::error!("File `{}` not found for download", full_path);
-                    }
-                    Err(e) => {
-                        send_error(&mut conn, "Failed to read file").await;
-                        log::error!("Failed to read file `{}`: {:#}", full_path, e);
-                    }
+            Packet::DownloadStart(file_path, _, _) => {
+                if let Err(e) = handle_download(&mut conn, &output_path, &file_path, &addr).await {
+                    log::error!("Download failed: {:#}", e);
+                } else {
+                    send_ok(&mut conn).await;
                 }
             }
 
-            Packet::Upload(file_path, data, mode, force) => {
-                let full_path = match safe_join(&output_path, &file_path) {
-                    Some(p) => p,
-                    None => {
-                        send_error(&mut conn, "Invalid file path").await;
-                        log::error!("Invalid file path provided: {}", file_path);
-                        return;
-                    }
-                };
-
-                if let Some(parent) = full_path.parent() {
-                    if let Err(e) = fs::create_dir_all(parent).await {
-                        send_error(&mut conn, "Failed to create directories").await;
-                        log::error!("Failed to create directories `{}`: {:#}", parent, e);
-                        return;
-                    }
+            Packet::UploadStart(file_path, total_size, mode, force) => {
+                if let Err(e) = handle_upload(
+                    &mut conn,
+                    &output_path,
+                    file_path,
+                    total_size,
+                    mode,
+                    force,
+                    &addr,
+                )
+                .await
+                {
+                    log::error!("Upload failed: {:#}", e);
+                } else {
+                    send_ok(&mut conn).await;
                 }
-
-                if !force {
-                    match fs::try_exists(&full_path).await {
-                        Ok(true) => {
-                            send_error(&mut conn, "File already exists").await;
-                            return;
-                        }
-                        Err(e) => {
-                            send_error(
-                                &mut conn,
-                                "Failed to confirm whether the file already exists",
-                            )
-                            .await;
-                            log::error!(
-                                "Failed to confirm whether file `{}` exists: {:#}",
-                                full_path,
-                                e
-                            );
-                            return;
-                        }
-                        _ => {}
-                    }
-                }
-
-                let file = OpenOptions::new()
-                    .create(true)
-                    .write(true)
-                    .truncate(true)
-                    .open(&full_path)
-                    .await;
-
-                match file {
-                    Ok(mut f) => {
-                        let _ = f.set_permissions(Permissions::from_mode(mode)).await;
-                        if let Err(e) = f.write_all(&data).await {
-                            send_error(&mut conn, "Failed to write file").await;
-                            log::error!("Failed to write to `{}`: {:#}", full_path, e);
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        send_error(&mut conn, "Failed to create file").await;
-                        log::error!("Failed to create file `{}`: {:#}", full_path, e);
-                        return;
-                    }
-                }
-
-                log::debug!("Saved file `{}`", full_path);
-                send_ok(&mut conn).await;
             }
 
             Packet::List(path, _) => {
-                let full_path = match safe_join(&output_path, &path) {
-                    Some(p) => p,
-                    None => {
-                        send_error(&mut conn, "Invalid path").await;
-                        log::error!("Invalid path provided: {}", path);
-                        return;
-                    }
-                };
-
-                let mut files = Vec::new();
-
-                for entry in WalkDir::new(&full_path).into_iter().filter_map(Result::ok) {
-                    if !entry.file_type().is_dir() {
-                        if let Ok(metadata) = entry.metadata() {
-                            if let Ok(stripped_path) = entry.path().strip_prefix(&output_path) {
-                                if let Some(path_str) = stripped_path.to_str() {
-                                    files.push(File {
-                                        path: path_str.to_string(),
-                                        size: metadata.size(),
-                                    });
-                                }
-                            }
-                        }
-                    }
+                if let Err(e) = handle_list(&mut conn, &output_path, path).await {
+                    log::error!("List failed: {:#}", e);
+                } else {
+                    send_ok(&mut conn).await;
                 }
-
-                if let Err(e) = conn.write_packet(&Packet::List(path, files)).await {
-                    log::error!("Failed to send packet: {:#}", e);
-                }
-
-                send_ok(&mut conn).await;
             }
 
             Packet::Remove(path, force, recursive) => {
-                let full_path = match safe_join(&output_path, &path) {
-                    Some(p) => p,
-                    None => {
-                        send_error(&mut conn, "Invalid path").await;
-                        log::error!("Invalid path provided: {}", path);
-                        return;
-                    }
-                };
-
-                match fs::try_exists(&full_path).await {
-                    Ok(false) => {
-                        if force {
-                            send_ok(&mut conn).await;
-                            return;
-                        } else {
-                            send_error(&mut conn, "Path does not exist").await;
-                            log::error!("Path `{}` does not exist", full_path);
-                            return;
-                        }
-                    }
-                    Err(e) => {
-                        send_error(&mut conn, "Failed to check path existence").await;
-                        log::error!("Failed to check path `{}`: {:#}", full_path, e);
-                        return;
-                    }
-                    _ => {}
+                if let Err(e) = handle_remove(&mut conn, &output_path, path, force, recursive).await
+                {
+                    log::error!("Remove failed: {:#}", e);
+                } else {
+                    send_ok(&mut conn).await;
                 }
-
-                let metadata = match fs::metadata(&full_path).await {
-                    Ok(m) => m,
-                    Err(e) => {
-                        send_error(&mut conn, "Failed to get path metadata").await;
-                        log::error!("Failed to get metadata for `{}`: {:#}", full_path, e);
-                        return;
-                    }
-                };
-
-                if metadata.is_file() {
-                    if let Err(e) = fs::remove_file(&full_path).await {
-                        send_error(&mut conn, "Failed to delete file").await;
-                        log::error!("Failed to delete file `{}`: {:#}", full_path, e);
-                        return;
-                    }
-                } else if metadata.is_dir() {
-                    if recursive {
-                        if let Err(e) = fs::remove_dir_all(&full_path).await {
-                            send_error(&mut conn, "Failed to delete directory recursively").await;
-                            log::error!(
-                                "Failed to delete directory `{}` recursively: {:#}",
-                                full_path,
-                                e
-                            );
-                            return;
-                        }
-                    } else {
-                        match fs::remove_dir(&full_path).await {
-                            Ok(()) => {}
-                            Err(e) if e.kind() == ErrorKind::DirectoryNotEmpty => {
-                                send_error(&mut conn, "Directory not empty (use recursive flag)")
-                                    .await;
-                                log::error!("Directory `{}` not empty", full_path);
-                                return;
-                            }
-                            Err(e) => {
-                                send_error(&mut conn, "Failed to delete directory").await;
-                                log::error!("Failed to delete directory `{}`: {:#}", full_path, e);
-                                return;
-                            }
-                        }
-                    }
-                }
-
-                log::debug!(
-                    "Deleted path `{}` (force: {}, recursive: {})",
-                    full_path,
-                    force,
-                    recursive
-                );
-                send_ok(&mut conn).await;
             }
 
             Packet::Ping => {
@@ -396,6 +211,261 @@ async fn handle_connection(stream: TcpStream, addr: SocketAddr, output_path: Utf
     .await;
 
     shutdown_connection(&mut conn, &addr).await;
+}
+
+async fn handle_download(
+    conn: &mut Connection,
+    output_path: &Utf8Path,
+    file_path: &str,
+    addr: &SocketAddr,
+) -> Result<()> {
+    let full_path = match safe_join(output_path, file_path) {
+        Some(p) => p,
+        None => {
+            send_error(conn, "Invalid file path").await;
+            anyhow::bail!("Invalid file path provided: {}", file_path);
+        }
+    };
+
+    let metadata = fs::metadata(&full_path)
+        .await
+        .context("Failed to get file metadata")?;
+    let file_size = metadata.len();
+
+    #[cfg(unix)]
+    let mode = metadata.mode();
+    #[cfg(not(unix))]
+    let mode = 0;
+
+    conn.write_packet(&Packet::DownloadStart(
+        file_path.to_string(),
+        file_size,
+        mode,
+    ))
+    .await
+    .context("Failed to send download start packet")?;
+
+    const CHUNK_SIZE: usize = 64 * 1024;
+    let mut file = fs::File::open(&full_path)
+        .await
+        .context("Failed to open file")?;
+    let mut buffer = vec![0u8; CHUNK_SIZE];
+
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .await
+            .context("Failed to read file chunk")?;
+        if bytes_read == 0 {
+            break;
+        }
+
+        let chunk = buffer[..bytes_read].to_vec();
+        conn.write_packet(&Packet::DownloadChunk(chunk))
+            .await
+            .context("Failed to send file chunk")?;
+    }
+
+    conn.write_packet(&Packet::DownloadEnd)
+        .await
+        .context("Failed to send download end packet")?;
+
+    log::debug!("Sent file `{}` to {} in chunks", full_path, addr);
+    Ok(())
+}
+
+async fn handle_upload(
+    conn: &mut Connection,
+    output_path: &Utf8Path,
+    file_path: String,
+    total_size: u64,
+    mode: u32,
+    force: bool,
+    addr: &SocketAddr,
+) -> Result<()> {
+    let full_path = match safe_join(output_path, &file_path) {
+        Some(p) => p,
+        None => {
+            send_error(conn, "Invalid file path").await;
+            anyhow::bail!("Invalid file path provided: {}", file_path);
+        }
+    };
+
+    send_ok(conn).await;
+
+    if let Some(parent) = full_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .context("Failed to create directories")?;
+    }
+
+    if !force && fs::try_exists(&full_path).await.unwrap_or(false) {
+        send_error(conn, "File already exists").await;
+        anyhow::bail!("File already exists: {}", full_path);
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&full_path)
+        .await
+        .context("Failed to create file")?;
+
+    file.set_permissions(Permissions::from_mode(mode))
+        .await
+        .context("Failed to set file permissions")?;
+
+    let mut received_bytes = 0;
+    loop {
+        let packet = conn
+            .read_packet()
+            .await
+            .context("Failed to read upload packet")?;
+
+        match packet {
+            Packet::UploadChunk(data) => {
+                received_bytes += data.len() as u64;
+                file.write_all(&data)
+                    .await
+                    .context("Failed to write file chunk")?;
+            }
+            Packet::UploadEnd => break,
+            _ => {
+                send_error(conn, "Unexpected packet during upload").await;
+                anyhow::bail!("Unexpected packet during upload");
+            }
+        }
+    }
+
+    if received_bytes != total_size {
+        send_error(conn, "File size mismatch").await;
+        anyhow::bail!(
+            "Received file size {} doesn't match expected size {}",
+            received_bytes,
+            total_size
+        );
+    }
+
+    log::debug!("Saved file `{}` from {} in chunks", full_path, addr);
+    Ok(())
+}
+
+async fn handle_remove(
+    conn: &mut Connection,
+    output_path: &Utf8Path,
+    path: String,
+    force: bool,
+    recursive: bool,
+) -> Result<()> {
+    let full_path = match safe_join(&output_path, &path) {
+        Some(p) => p,
+        None => {
+            send_error(conn, "Invalid path").await;
+            anyhow::bail!("Invalid path provided: {}", path);
+        }
+    };
+
+    match fs::try_exists(&full_path).await {
+        Ok(false) => {
+            if force {
+                send_ok(conn).await;
+                return Ok(());
+            } else {
+                send_error(conn, "Path does not exist").await;
+                anyhow::bail!("Path `{}` does not exist", full_path);
+            }
+        }
+        Err(e) => {
+            send_error(conn, "Failed to check path existence").await;
+            anyhow::bail!("Failed to check path `{}`: {:#}", full_path, e);
+        }
+        _ => {}
+    }
+
+    let metadata = match fs::metadata(&full_path).await {
+        Ok(m) => m,
+        Err(e) => {
+            send_error(conn, "Failed to get path metadata").await;
+            anyhow::bail!("Failed to get metadata for `{}`: {:#}", full_path, e);
+        }
+    };
+
+    if metadata.is_file() {
+        if let Err(e) = fs::remove_file(&full_path).await {
+            send_error(conn, "Failed to delete file").await;
+            anyhow::bail!("Failed to delete file `{}`: {:#}", full_path, e);
+        }
+    } else if metadata.is_dir() {
+        if recursive {
+            if let Err(e) = fs::remove_dir_all(&full_path).await {
+                send_error(conn, "Failed to delete directory recursively").await;
+                anyhow::bail!(
+                    "Failed to delete directory `{}` recursively: {:#}",
+                    full_path,
+                    e
+                );
+            }
+        } else {
+            match fs::remove_dir(&full_path).await {
+                Ok(()) => {}
+                Err(e) if e.kind() == ErrorKind::DirectoryNotEmpty => {
+                    send_error(conn, "Directory not empty (use recursive flag)").await;
+                    anyhow::bail!("Directory `{}` not empty", full_path);
+                }
+                Err(e) => {
+                    send_error(conn, "Failed to delete directory").await;
+                    anyhow::bail!("Failed to delete directory `{}`: {:#}", full_path, e);
+                }
+            }
+        }
+    }
+
+    log::debug!(
+        "Deleted path `{}` (force: {}, recursive: {})",
+        full_path,
+        force,
+        recursive
+    );
+
+    send_ok(conn).await;
+
+    Ok(())
+}
+
+async fn handle_list(conn: &mut Connection, output_path: &Utf8Path, path: String) -> Result<()> {
+    let full_path = match safe_join(&output_path, &path) {
+        Some(p) => p,
+        None => {
+            send_error(conn, "Invalid path").await;
+            anyhow::bail!("Invalid path provided: {}", path);
+        }
+    };
+
+    let mut files = Vec::new();
+
+    for entry in WalkDir::new(&full_path).into_iter().filter_map(Result::ok) {
+        if !entry.file_type().is_dir() {
+            if let Ok(metadata) = entry.metadata() {
+                if let Ok(stripped_path) = entry.path().strip_prefix(&output_path) {
+                    if let Some(path_str) = stripped_path.to_str() {
+                        files.push(File {
+                            path: path_str.to_string(),
+                            size: metadata.size(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    if let Err(e) = conn.write_packet(&Packet::List(path, files)).await {
+        anyhow::bail!("Failed to send packet: {:#}", e);
+    }
+
+    send_ok(conn).await;
+
+    Ok(())
 }
 
 fn safe_join(base: &Utf8Path, relative: &str) -> Option<Utf8PathBuf> {
